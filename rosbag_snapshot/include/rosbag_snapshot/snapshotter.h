@@ -292,9 +292,15 @@ private:
   void pollTopics(ros::TimerEvent const& e, rosbag_snapshot::SnapshotterOptions *options);
   // Write the parts of message_queue within the time constraints of req to the queue
   // If returns false, there was an error opening/writing the bag and an error message was written to res.message
-  bool writeTopic(rosbag::Bag& bag, MessageQueue& message_queue, std::string const& topic,
+  bool writeTopic(rosbag::Bag& bag,
+                  MessageQueue& message_queue,
+                  std::string const& topic,
                   rosbag_snapshot_msgs::TriggerSnapshot::Request& req,
                   rosbag_snapshot_msgs::TriggerSnapshot::Response& res);
+  const SnapshotMessage* findExtraLatchedMessage(const MessageQueue& queue,
+                                                 const ros::Time& start,
+                                                 const ros::Time& stop) const;
+  static bool isLatched(const SnapshotMessage& msg);
 };
 
 // Configuration for SnapshotterClient

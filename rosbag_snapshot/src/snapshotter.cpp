@@ -398,14 +398,17 @@ void Snapshotter::subscribe(string const& topic, boost::shared_ptr<MessageQueue>
   queue->setSubscriber(sub);
 }
 
-bool Snapshotter::writeTopic(rosbag::Bag& bag, MessageQueue& message_queue, string const& topic,
+bool Snapshotter::writeTopic(rosbag::Bag& bag,
+                             MessageQueue& message_queue,
+                             string const& topic,
                              rosbag_snapshot_msgs::TriggerSnapshot::Request& req,
-                             rosbag_snapshot_msgs::TriggerSnapshot::Response& res)
-{
+                             rosbag_snapshot_msgs::TriggerSnapshot::Response& res) {
   // acquire lock for this queue
   boost::mutex::scoped_lock l(message_queue.lock);
 
   MessageQueue::range_t range = message_queue.rangeFromTimes(req.start_time, req.stop_time);
+
+  const SnapshotMessage* extra_latched_msg = findExtraLatchedMessage(message_queue, req.start_time, req.stop_time);
 
   // open bag if this the first valid topic and there is data
   if (!bag.isOpen() && range.second > range.first)
@@ -447,13 +450,37 @@ bool Snapshotter::writeTopic(rosbag::Bag& bag, MessageQueue& message_queue, stri
       SnapshotMessage const& msg = *msg_it;
       bag.write(topic, msg.time, msg.msg, msg.connection_header);
     }
-  }
-  catch (rosbag::BagException const& err)
-  {
+    if (extra_latched_msg) {
+      bag.write(topic, req.start_time, extra_latched_msg->msg, extra_latched_msg->connection_header);
+    }
+  } catch (rosbag::BagException const& err) {
     res.success = false;
     res.message = string("failed to write bag: ") + err.what();
   }
   return true;
+}
+
+const SnapshotMessage* Snapshotter::findExtraLatchedMessage(const MessageQueue& queue,
+                                                            const ros::Time& start,
+                                                            const ros::Time& stop) const {
+ 
+  const MessageQueue::queue_t& q = queue.queue_;
+  if (q.empty()) return nullptr;
+
+  const SnapshotMessage* last_before = nullptr;  
+  const SnapshotMessage* first_after = nullptr; 
+
+  for (const auto& msg : q) {
+    if (msg.time < start) {
+      if (isLatched(msg)) last_before = &msg;
+    }
+  }
+  return last_before;
+}
+
+bool Snapshotter::isLatched(const SnapshotMessage& msg) {
+  return msg.connection_header && msg.connection_header->count("latching") &&
+         msg.connection_header->at("latching") == "1";
 }
 
 bool Snapshotter::triggerSnapshotCb(rosbag_snapshot_msgs::TriggerSnapshot::Request& req,
