@@ -67,6 +67,11 @@ static bool is_topic_name_pattern(const std::string& s)
   return s.find_first_of(".*+?()[]{}\\") != std::string::npos;
 }
 
+static bool isLatched(const SnapshotMessage& msg) {
+  return msg.connection_header && msg.connection_header->count("latching") &&
+         msg.connection_header->at("latching") == "1";
+}
+
 SnapshotterTopicOptions::SnapshotterTopicOptions(ros::Duration duration_limit, int32_t memory_limit,
                                                  int32_t count_limit)
   : duration_limit_(duration_limit), memory_limit_(memory_limit), count_limit_(count_limit)
@@ -475,11 +480,6 @@ const SnapshotMessage* Snapshotter::findExtraLatchedMessage(const MessageQueue& 
     }
   }
   return last_before;
-}
-
-bool Snapshotter::isLatched(const SnapshotMessage& msg) {
-  return msg.connection_header && msg.connection_header->count("latching") &&
-         msg.connection_header->at("latching") == "1";
 }
 
 bool Snapshotter::triggerSnapshotCb(rosbag_snapshot_msgs::TriggerSnapshot::Request& req,

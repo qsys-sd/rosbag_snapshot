@@ -300,7 +300,6 @@ private:
   const SnapshotMessage* findExtraLatchedMessage(const MessageQueue& queue,
                                                  const ros::Time& start,
                                                  const ros::Time& stop) const;
-  static bool isLatched(const SnapshotMessage& msg);
 };
 
 // Configuration for SnapshotterClient
