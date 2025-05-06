@@ -467,8 +467,7 @@ const SnapshotMessage* Snapshotter::findExtraLatchedMessage(const MessageQueue& 
   const MessageQueue::queue_t& q = queue.queue_;
   if (q.empty()) return nullptr;
 
-  const SnapshotMessage* last_before = nullptr;  
-  const SnapshotMessage* first_after = nullptr; 
+  const SnapshotMessage* last_before = nullptr;
 
   for (const auto& msg : q) {
     if (msg.time < start) {
