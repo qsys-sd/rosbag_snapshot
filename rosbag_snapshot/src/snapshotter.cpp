@@ -300,6 +300,21 @@ SnapshotMessage MessageQueue::_pop()
   return tmp;
 }
 
+const SnapshotMessage* MessageQueue::findExtraLatchedMessage(const ros::Time& start, const ros::Time& stop) const
+{ 
+
+  const SnapshotMessage* last_before = nullptr;
+  for (auto& msg : queue_)
+  {
+    if (msg.time < start)
+    {
+      if (isLatched(msg))
+        last_before = &msg;
+    }
+  }
+  return last_before;
+}
+
 MessageQueue::range_t MessageQueue::rangeFromTimes(Time const& start, Time const& stop)
 {
   range_t::first_type begin = queue_.begin();
@@ -413,7 +428,7 @@ bool Snapshotter::writeTopic(rosbag::Bag& bag,
 
   MessageQueue::range_t range = message_queue.rangeFromTimes(req.start_time, req.stop_time);
 
-  const SnapshotMessage* extra_latched_msg = findExtraLatchedMessage(message_queue, req.start_time, req.stop_time);
+  const SnapshotMessage* extra_latched_msg = message_queue.findExtraLatchedMessage(req.start_time, req.stop_time);
 
   // open bag if this the first valid topic and there is data
   if (!bag.isOpen() && range.second > range.first)
@@ -463,23 +478,6 @@ bool Snapshotter::writeTopic(rosbag::Bag& bag,
     res.message = string("failed to write bag: ") + err.what();
   }
   return true;
-}
-
-const SnapshotMessage* Snapshotter::findExtraLatchedMessage(const MessageQueue& queue,
-                                                            const ros::Time& start,
-                                                            const ros::Time& stop) const {
- 
-  const MessageQueue::queue_t& q = queue.queue_;
-  if (q.empty()) return nullptr;
-
-  const SnapshotMessage* last_before = nullptr;
-
-  for (const auto& msg : q) {
-    if (msg.time < start) {
-      if (isLatched(msg)) last_before = &msg;
-    }
-  }
-  return last_before;
 }
 
 bool Snapshotter::triggerSnapshotCb(rosbag_snapshot_msgs::TriggerSnapshot::Request& req,

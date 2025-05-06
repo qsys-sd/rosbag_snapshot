@@ -219,6 +219,10 @@ public:
   // Return the total message size including the meta-information
   int64_t getMessageSize(SnapshotMessage const& msg) const;
 
+  const SnapshotMessage* findExtraLatchedMessage(const ros::Time& start,
+                                                 const ros::Time& stop) const;
+
+
 private:
   // Internal push whitch does not obtain lock
   void _push(SnapshotMessage const& msg);
@@ -297,9 +301,6 @@ private:
                   std::string const& topic,
                   rosbag_snapshot_msgs::TriggerSnapshot::Request& req,
                   rosbag_snapshot_msgs::TriggerSnapshot::Response& res);
-  const SnapshotMessage* findExtraLatchedMessage(const MessageQueue& queue,
-                                                 const ros::Time& start,
-                                                 const ros::Time& stop) const;
 };
 
 // Configuration for SnapshotterClient
