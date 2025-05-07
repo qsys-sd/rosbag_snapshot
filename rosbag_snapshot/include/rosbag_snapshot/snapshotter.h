@@ -219,6 +219,10 @@ public:
   // Return the total message size including the meta-information
   int64_t getMessageSize(SnapshotMessage const& msg) const;
 
+  const SnapshotMessage* findExtraLatchedMessage(const ros::Time& start,
+                                                 const ros::Time& stop) const;
+
+
 private:
   // Internal push whitch does not obtain lock
   void _push(SnapshotMessage const& msg);
@@ -292,7 +296,9 @@ private:
   void pollTopics(ros::TimerEvent const& e, rosbag_snapshot::SnapshotterOptions *options);
   // Write the parts of message_queue within the time constraints of req to the queue
   // If returns false, there was an error opening/writing the bag and an error message was written to res.message
-  bool writeTopic(rosbag::Bag& bag, MessageQueue& message_queue, std::string const& topic,
+  bool writeTopic(rosbag::Bag& bag,
+                  MessageQueue& message_queue,
+                  std::string const& topic,
                   rosbag_snapshot_msgs::TriggerSnapshot::Request& req,
                   rosbag_snapshot_msgs::TriggerSnapshot::Response& res);
 };

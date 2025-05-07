@@ -67,6 +67,12 @@ static bool is_topic_name_pattern(const std::string& s)
   return s.find_first_of(".*+?()[]{}\\") != std::string::npos;
 }
 
+static bool isLatched(const SnapshotMessage& msg)
+{
+  return msg.connection_header && msg.connection_header->count("latching") &&
+         msg.connection_header->at("latching") == "1";
+}
+
 SnapshotterTopicOptions::SnapshotterTopicOptions(ros::Duration duration_limit, int32_t memory_limit,
                                                  int32_t count_limit)
   : duration_limit_(duration_limit), memory_limit_(memory_limit), count_limit_(count_limit)
@@ -295,6 +301,20 @@ SnapshotMessage MessageQueue::_pop()
   return tmp;
 }
 
+const SnapshotMessage* MessageQueue::findExtraLatchedMessage(const ros::Time& start, const ros::Time& stop) const
+{
+  const SnapshotMessage* last_before = nullptr;
+  for (auto& msg : queue_)
+  {
+    if (msg.time < start)
+    {
+      if (isLatched(msg))
+        last_before = &msg;
+    }
+  }
+  return last_before;
+}
+
 MessageQueue::range_t MessageQueue::rangeFromTimes(Time const& start, Time const& stop)
 {
   range_t::first_type begin = queue_.begin();
@@ -398,14 +418,18 @@ void Snapshotter::subscribe(string const& topic, boost::shared_ptr<MessageQueue>
   queue->setSubscriber(sub);
 }
 
-bool Snapshotter::writeTopic(rosbag::Bag& bag, MessageQueue& message_queue, string const& topic,
+bool Snapshotter::writeTopic(rosbag::Bag& bag,
+                             MessageQueue& message_queue,
+                             string const& topic,
                              rosbag_snapshot_msgs::TriggerSnapshot::Request& req,
                              rosbag_snapshot_msgs::TriggerSnapshot::Response& res)
-{
+                             {
   // acquire lock for this queue
   boost::mutex::scoped_lock l(message_queue.lock);
 
   MessageQueue::range_t range = message_queue.rangeFromTimes(req.start_time, req.stop_time);
+
+  const SnapshotMessage* extra_latched_msg = message_queue.findExtraLatchedMessage(req.start_time, req.stop_time);
 
   // open bag if this the first valid topic and there is data
   if (!bag.isOpen() && range.second > range.first)
@@ -442,6 +466,10 @@ bool Snapshotter::writeTopic(rosbag::Bag& bag, MessageQueue& message_queue, stri
   // write queue
   try
   {
+    if (extra_latched_msg)
+    {
+      bag.write(topic, req.start_time, extra_latched_msg->msg, extra_latched_msg->connection_header);
+    }
     for (MessageQueue::range_t::first_type msg_it = range.first; msg_it != range.second; ++msg_it)
     {
       SnapshotMessage const& msg = *msg_it;
