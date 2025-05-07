@@ -67,7 +67,8 @@ static bool is_topic_name_pattern(const std::string& s)
   return s.find_first_of(".*+?()[]{}\\") != std::string::npos;
 }
 
-static bool isLatched(const SnapshotMessage& msg) {
+static bool isLatched(const SnapshotMessage& msg)
+{
   return msg.connection_header && msg.connection_header->count("latching") &&
          msg.connection_header->at("latching") == "1";
 }
@@ -301,8 +302,7 @@ SnapshotMessage MessageQueue::_pop()
 }
 
 const SnapshotMessage* MessageQueue::findExtraLatchedMessage(const ros::Time& start, const ros::Time& stop) const
-{ 
-
+{
   const SnapshotMessage* last_before = nullptr;
   for (auto& msg : queue_)
   {
@@ -422,7 +422,8 @@ bool Snapshotter::writeTopic(rosbag::Bag& bag,
                              MessageQueue& message_queue,
                              string const& topic,
                              rosbag_snapshot_msgs::TriggerSnapshot::Request& req,
-                             rosbag_snapshot_msgs::TriggerSnapshot::Response& res) {
+                             rosbag_snapshot_msgs::TriggerSnapshot::Response& res)
+                             {
   // acquire lock for this queue
   boost::mutex::scoped_lock l(message_queue.lock);
 
@@ -465,7 +466,8 @@ bool Snapshotter::writeTopic(rosbag::Bag& bag,
   // write queue
   try
   {
-    if (extra_latched_msg) {
+    if (extra_latched_msg)
+    {
       bag.write(topic, req.start_time, extra_latched_msg->msg, extra_latched_msg->connection_header);
     }
     for (MessageQueue::range_t::first_type msg_it = range.first; msg_it != range.second; ++msg_it)
@@ -473,7 +475,9 @@ bool Snapshotter::writeTopic(rosbag::Bag& bag,
       SnapshotMessage const& msg = *msg_it;
       bag.write(topic, msg.time, msg.msg, msg.connection_header);
     }
-  } catch (rosbag::BagException const& err) {
+  }
+  catch (rosbag::BagException const& err)
+  {
     res.success = false;
     res.message = string("failed to write bag: ") + err.what();
   }
