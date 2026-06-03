@@ -17,6 +17,7 @@ catkin_package(
     LIBRARIES rosbag_snapshot
 )
 include_directories(include ${catkin_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
+add_compile_options("-std=c++17")
 
 add_library(rosbag_snapshot src/snapshotter.cpp)
 add_dependencies(rosbag_snapshot ${catkin_EXPORTED_TARGETS})

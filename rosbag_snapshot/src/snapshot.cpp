@@ -75,6 +75,8 @@ bool parseOptions(po::variables_map& vm, int argc, char** argv)
      "Maximum number of messages per topic to use when buffering. Default: no limit")
     ("duration,d", po::value<double>()->default_value(30.0),
      "Maximum difference between newest and oldest buffered message per topic in seconds. Default: 30")
+    ("orphan-expiration,d", po::value<double>()->default_value(15.0),
+     "Drop topic when there is no publisher attached to it for longer than the given duration in seconds. Default: 15")
     ("output-prefix,o", po::value<std::string>()->default_value(""),
      "When in trigger write mode, prepend PREFIX to name of writting bag file")
     ("output-filename,O", po::value<std::string>(), "When in trigger write mode, exact name of written bag file")
@@ -122,6 +124,7 @@ bool parseVariablesMap(SnapshotterOptions& opts, po::variables_map const& vm)
   opts.default_memory_limit_ = static_cast<int>(MB_TO_BYTES * vm["size"].as<double>());
   opts.default_duration_limit_ = ros::Duration(vm["duration"].as<double>());
   opts.default_count_limit_ =  vm["count"].as<int32_t>();
+  opts.default_orphan_expiration_limit_ =  ros::Duration(vm["orphan-expiration"].as<double>());
   if (vm.count("no-clear"))
   {
     opts.clear_buffer_ = false;
@@ -204,9 +207,11 @@ void appendParamOptions(ros::NodeHandle& nh, SnapshotterOptions& opts)
       ros::Duration dur = SnapshotterTopicOptions::INHERIT_DURATION_LIMIT;
       int64_t mem = SnapshotterTopicOptions::INHERIT_MEMORY_LIMIT;
       int32_t cnt = SnapshotterTopicOptions::INHERIT_COUNT_LIMIT;
+      ros::Duration oexp = SnapshotterTopicOptions::INHERIT_ORPHAN_EXPIRATION_LIMIT;
       std::string duration = "duration";
       std::string memory = "memory";
       std::string count = "count";
+      std::string orphan_expiration = "orphan_expiration";
       if (topic_config.hasMember(duration))
       {
         XmlRpcValue& dur_limit = topic_config[duration];
@@ -245,6 +250,22 @@ void appendParamOptions(ros::NodeHandle& nh, SnapshotterOptions& opts)
         if (cnt_limit.getType() == XmlRpcValue::TypeInt)
         {
           cnt = cnt_limit;
+        }
+        else
+          ROS_FATAL("err");
+      }
+      if (topic_config.hasMember(orphan_expiration))
+      {
+        XmlRpcValue& expiration_limit = topic_config[orphan_expiration];
+        if (expiration_limit.getType() == XmlRpcValue::TypeDouble)
+        {
+          double seconds = expiration_limit;
+          dur = ros::Duration(seconds);
+        }
+        else if (expiration_limit.getType() == XmlRpcValue::TypeInt)
+        {
+          int seconds = expiration_limit;
+          dur = ros::Duration(seconds, 0);
         }
         else
           ROS_FATAL("err");

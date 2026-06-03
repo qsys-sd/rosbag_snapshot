@@ -31,6 +31,7 @@
 *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 *  POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
+#include <optional>
 #include <queue>
 #include <string>
 #include <time.h>
@@ -61,6 +62,7 @@ const int32_t SnapshotterTopicOptions::NO_COUNT_LIMIT = -1;
 const ros::Duration SnapshotterTopicOptions::INHERIT_DURATION_LIMIT = ros::Duration(0);
 const int32_t SnapshotterTopicOptions::INHERIT_MEMORY_LIMIT = 0;
 const int32_t SnapshotterTopicOptions::INHERIT_COUNT_LIMIT = 0;
+const ros::Duration SnapshotterTopicOptions::INHERIT_ORPHAN_EXPIRATION_LIMIT = ros::Duration(0);
 
 static bool is_topic_name_pattern(const std::string& s)
 {
@@ -74,16 +76,21 @@ static bool isLatched(const SnapshotMessage& msg)
 }
 
 SnapshotterTopicOptions::SnapshotterTopicOptions(ros::Duration duration_limit, int32_t memory_limit,
-                                                 int32_t count_limit)
+                                                 int32_t count_limit, ros::Duration orphan_expiration_limit)
   : duration_limit_(duration_limit), memory_limit_(memory_limit), count_limit_(count_limit)
+  , orphan_expiration_limit_(orphan_expiration_limit)
 {
 }
 
-SnapshotterOptions::SnapshotterOptions(ros::Duration default_duration_limit, int32_t default_memory_limit,
-                                     int32_t default_count_limit, ros::Duration status_period, bool clear_buffer)
+SnapshotterOptions::SnapshotterOptions(ros::Duration default_duration_limit,
+                                       int32_t default_memory_limit,
+                                       int32_t default_count_limit,
+                                       ros::Duration default_orphan_expiration_limit,
+                                       ros::Duration status_period, bool clear_buffer)
   : default_duration_limit_(default_duration_limit)
   , default_memory_limit_(default_memory_limit)
   , default_count_limit_(default_count_limit)
+  , default_orphan_expiration_limit_(default_orphan_expiration_limit)
   , status_period_(status_period)
   , clear_buffer_(clear_buffer)
   , topics_()
@@ -92,17 +99,19 @@ SnapshotterOptions::SnapshotterOptions(ros::Duration default_duration_limit, int
 {
 }
 
-bool SnapshotterOptions::addTopic(std::string const& topic, ros::Duration duration, int32_t memory, int32_t count)
+bool SnapshotterOptions::addTopic(std::string const& topic, ros::Duration duration, int32_t memory, int32_t count,
+                                  ros::Duration orphan_expiration_limit)
 {
-  SnapshotterTopicOptions ops(duration, memory, count);
+  SnapshotterTopicOptions ops(duration, memory, count, orphan_expiration_limit);
   std::pair<topics_t::iterator, bool> ret;
   ret = topics_.insert(topics_t::value_type(topic, ops));
   return ret.second;
 }
 
-bool SnapshotterOptions::addPattern(std::string const& pattern, ros::Duration duration, int32_t memory, int32_t count)
+bool SnapshotterOptions::addPattern(std::string const& pattern, ros::Duration duration, int32_t memory, int32_t count,
+                                    ros::Duration orphan_expiration_limit)
 {
-  SnapshotterTopicOptions ops(duration, memory, count);
+  SnapshotterTopicOptions ops(duration, memory, count, orphan_expiration_limit);
   try
   {
     patterns_.emplace_back(std::make_shared<SnapshotterTopicPattern>(pattern, ops));
@@ -117,12 +126,19 @@ bool SnapshotterOptions::addPattern(std::string const& pattern, ros::Duration du
 }
 
 bool SnapshotterOptions::addTopicOrPattern(std::string const& topic_or_pattern,
-                                           ros::Duration duration, int32_t memory, int32_t count)
+                                           ros::Duration duration, int32_t memory, int32_t count,
+                                           ros::Duration orphan_expiration_limit)
 {
   if (is_topic_name_pattern(topic_or_pattern))
-    return addPattern(topic_or_pattern, duration, memory, count);
+    return addPattern(topic_or_pattern, duration, memory, count, orphan_expiration_limit);
   else
-    return addTopic(topic_or_pattern, duration, memory, count);
+    return addTopic(topic_or_pattern, duration, memory, count, orphan_expiration_limit);
+}
+
+bool SnapshotterOptions::removeTopic(std::string const& topic)
+{
+  auto ret = topics_.erase(topic);
+  return static_cast<bool>(ret);
 }
 
 SnapshotterTopicPatternConstPtr SnapshotterOptions::findFirstMatchingPattern(const std::string &topic)
@@ -175,7 +191,8 @@ SnapshotMessage::SnapshotMessage(topic_tools::ShapeShifter::ConstPtr _msg,
 {
 }
 
-MessageQueue::MessageQueue(SnapshotterTopicOptions const& options) : options_(options), size_(0)
+MessageQueue::MessageQueue(SnapshotterTopicOptions const& options)
+  : options_(options), size_(0), orphan_since_timestamp_(std::nullopt)
 {
 }
 
@@ -315,6 +332,26 @@ const SnapshotMessage* MessageQueue::findExtraLatchedMessage(const ros::Time& st
   return last_before;
 }
 
+void MessageQueue::updateTopicExpirationStatus()
+{
+  if (sub_ && (sub_->getNumPublishers() == 0))
+  {
+    if (orphan_since_timestamp_.has_value())
+      return;
+    orphan_since_timestamp_ = ros::Time::now();
+  }
+  else orphan_since_timestamp_ = std::nullopt;
+}
+
+bool MessageQueue::hasTopicExpired() const
+{
+  if (!orphan_since_timestamp_.has_value()) return false;
+  const double limit = options_.orphan_expiration_limit_.toSec();
+  if (limit < 0.0) return false;
+  if ((ros::Time::now() - orphan_since_timestamp_.value()).toSec() < limit) return false;
+  return true;
+}
+
 MessageQueue::range_t MessageQueue::rangeFromTimes(Time const& start, Time const& stop)
 {
   range_t::first_type begin = queue_.begin();
@@ -334,6 +371,14 @@ MessageQueue::range_t MessageQueue::rangeFromTimes(Time const& start, Time const
   return range_t(begin, end);
 }
 
+std::optional<ros::Time> MessageQueue::newestMessageTime() const
+{
+  boost::mutex::scoped_lock l(lock);
+  if (queue_.empty())
+    return std::nullopt;
+  return queue_.back().time;
+}
+
 const int Snapshotter::QUEUE_SIZE = 10;
 
 Snapshotter::Snapshotter(SnapshotterOptions const& options) : options_(options), recording_(true), writing_(false)
@@ -343,6 +388,7 @@ Snapshotter::Snapshotter(SnapshotterOptions const& options) : options_(options),
 
 Snapshotter::~Snapshotter()
 {
+  boost::mutex::scoped_lock l(buffers_lock_);
   // Each buffer contains a pointer to the subscriber and vice versa, so we need to
   // shutdown the subscriber to allow garbage collection to happen
   for (std::pair<const std::string, boost::shared_ptr<MessageQueue>>& buffer : buffers_)
@@ -359,6 +405,8 @@ void Snapshotter::fixTopicOptions(SnapshotterTopicOptions& options)
     options.memory_limit_ = options_.default_memory_limit_;
   if (options.count_limit_ == SnapshotterTopicOptions::INHERIT_COUNT_LIMIT)
     options.count_limit_ = options_.default_memory_limit_;
+  if (options.orphan_expiration_limit_ == SnapshotterTopicOptions::INHERIT_ORPHAN_EXPIRATION_LIMIT)
+    options.orphan_expiration_limit_ = options_.default_orphan_expiration_limit_;
 }
 
 bool Snapshotter::postfixFilename(string& file)
@@ -525,6 +573,7 @@ bool Snapshotter::triggerSnapshotCb(rosbag_snapshot_msgs::TriggerSnapshot::Reque
   rosbag::Bag bag;
 
   // Write each selected topic's queue to bag file
+  boost::mutex::scoped_lock l(buffers_lock_);
   if (req.topics.size() && req.topics.at(0).size())
   {
     for (std::string& topic : req.topics)
@@ -579,6 +628,7 @@ bool Snapshotter::triggerSnapshotCb(rosbag_snapshot_msgs::TriggerSnapshot::Reque
 
 void Snapshotter::clear()
 {
+  boost::mutex::scoped_lock l(buffers_lock_);
   for (const buffers_t::value_type& pair : buffers_)
   {
     pair.second->clear();
@@ -641,28 +691,81 @@ void Snapshotter::publishStatus(ros::TimerEvent const& e)
     msg.enabled = recording_;
   }
   std::string node_id = ros::this_node::getName();
-  for (const buffers_t::value_type& pair : buffers_)
   {
-    rosgraph_msgs::TopicStatistics status;
-    status.node_sub = node_id;
-    status.topic = pair.first;
-    pair.second->fillStatus(status);
-    msg.topics.push_back(status);
+    boost::mutex::scoped_lock l(buffers_lock_);
+    for (const buffers_t::value_type& pair : buffers_)
+    {
+      rosgraph_msgs::TopicStatistics status;
+      status.node_sub = node_id;
+      status.topic = pair.first;
+      pair.second->fillStatus(status);
+      msg.topics.push_back(status);
+    }
   }
 
   status_pub_.publish(msg);
 }
 
+void Snapshotter::maybeRemoveExpiredTopics(ros::TimerEvent const& e)
+{
+  (void)e;
+  boost::mutex::scoped_lock l(buffers_lock_);
+  for (auto it = buffers_.begin(); it != buffers_.end();)
+  {
+    const auto topic = it->first;
+    auto queue = it->second;
+    if (!queue)
+    {
+      ++it;
+      continue;
+    }
+    queue->updateTopicExpirationStatus();
+    if (!queue->hasTopicExpired())
+    {
+      ++it;
+      continue;
+    }
+    // Check if the topic has an explicit duration limit and has recent messages
+    const SnapshotterTopicOptions& options = queue->options_;
+    if (options.duration_limit_ > SnapshotterTopicOptions::NO_DURATION_LIMIT &&
+        options.duration_limit_ > ros::Duration(0))
+    {
+      // Get the newest message time in the queue
+      auto newest_time_opt = queue->newestMessageTime();
+      if (newest_time_opt.has_value())
+      {
+        const ros::Time newest_time = newest_time_opt.value();
+        const ros::Time cutoff_time = ros::Time::now() - options.duration_limit_;
+        // If there are messages newer than the cutoff time, postpone removal
+        if (newest_time > cutoff_time)
+        {
+          ROS_DEBUG_THROTTLE(5, "Topic %s has explicit duration limit (%.2fs) and recent messages, postponing removal",
+                             topic.c_str(), options.duration_limit_.toSec());
+          // Skip removal
+          ++it;
+          continue;
+        }
+      }
+    }
+    ROS_INFO("Unsubscribing from expired orphaned topic: %s", topic.c_str());
+    options_.removeTopic(topic);
+    queue->sub_->shutdown();
+    queue->clear();
+    it = buffers_.erase(it);
+  }
+}
+
 void Snapshotter::pollTopics(ros::TimerEvent const& e, rosbag_snapshot::SnapshotterOptions *options)
 {
   (void)e;
+  boost::mutex::scoped_lock l(buffers_lock_);
   ros::master::V_TopicInfo topics;
   if (ros::master::getTopics(topics))
   {
     for (ros::master::TopicInfo const& t : topics)
     {
       std::string topic = t.name;
-      SnapshotterTopicOptions topic_options;
+      SnapshotterTopicOptions topic_options = SnapshotterTopicOptions();
       if (!options->all_topics_)
       {
         SnapshotterTopicPatternConstPtr matching_topic_pattern = options->findFirstMatchingPattern(topic);
@@ -672,7 +775,6 @@ void Snapshotter::pollTopics(ros::TimerEvent const& e, rosbag_snapshot::Snapshot
       }
       if (options->addTopic(topic))
       {
-        SnapshotterTopicOptions topic_options;
         fixTopicOptions(topic_options);
         shared_ptr<MessageQueue> queue;
         queue.reset(new MessageQueue(topic_options));
@@ -717,6 +819,9 @@ int Snapshotter::run()
   poll_topic_timer_ = nh_.createTimer(ros::Duration(1.0),
                                       boost::bind(&Snapshotter::pollTopics, this,
                                                   boost::placeholders::_1, &options_));
+
+  // Start timer to remove expired topics and buffers.
+  expired_topics_removal_timer_ = nh_.createTimer(ros::Duration(5.0), &Snapshotter::maybeRemoveExpiredTopics, this);
 
   // Use multiple callback threads
   ros::MultiThreadedSpinner spinner(4);  // Use 4 threads

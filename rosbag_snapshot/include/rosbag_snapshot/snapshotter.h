@@ -54,6 +54,7 @@
 #include <vector>
 #include <memory>
 #include <unordered_map>
+#include <optional>
 
 namespace rosbag_snapshot
 {
@@ -77,6 +78,8 @@ struct ROSBAG_DECL SnapshotterTopicOptions
   static const int32_t INHERIT_MEMORY_LIMIT;
   // When the value of count_limit_, inherit the limit from the node's configured default
   static const int32_t INHERIT_COUNT_LIMIT;
+  // When the value of orphan_expiration_limit_, inherit the limit from the node's configured default
+  static const ros::Duration INHERIT_ORPHAN_EXPIRATION_LIMIT;
 
   // Maximum difference in time from newest and oldest message in buffer before older messages are removed
   ros::Duration duration_limit_;
@@ -84,9 +87,13 @@ struct ROSBAG_DECL SnapshotterTopicOptions
   int32_t memory_limit_;
   // Maximum number of message in the buffer before older messages are removed
   int32_t count_limit_;
+  // Drop topic when there is no publisher attached to it for longer than the given duration.
+  ros::Duration orphan_expiration_limit_;
 
   SnapshotterTopicOptions(ros::Duration duration_limit = INHERIT_DURATION_LIMIT,
-                          int32_t memory_limit = INHERIT_MEMORY_LIMIT, int32_t count_limit = INHERIT_COUNT_LIMIT);
+                          int32_t memory_limit = INHERIT_MEMORY_LIMIT,
+                          int32_t count_limit = INHERIT_COUNT_LIMIT,
+                          ros::Duration orphan_expiration_limit = INHERIT_ORPHAN_EXPIRATION_LIMIT);
 };
 
 /* Regular expression matching fully qualified topic names that should be tracked.
@@ -121,6 +128,8 @@ struct ROSBAG_DECL SnapshotterOptions
   int32_t default_memory_limit_;
   // Count limit to use for a topic's buffer if one is not specified
   int32_t default_count_limit_;
+  // Orphan expiration limit to use for a topic's buffer if one is not specified
+  ros::Duration default_orphan_expiration_limit_;
   // Period between publishing topic status messages. If <= ros::Duration(0), don't publish status
   ros::Duration status_period_;
   // Flag if all topics should be recorded
@@ -140,26 +149,35 @@ struct ROSBAG_DECL SnapshotterOptions
   // Cache of the first pattern that has matched a given topic (or nullptr if no pattern matched).
   std::unordered_map<std::string, SnapshotterTopicPatternConstPtr> matching_patterns_cache_;
 
-  SnapshotterOptions(ros::Duration default_duration_limit = ros::Duration(30), int32_t default_memory_limit = -1,
-                     int32_t default_count_limit = -1, ros::Duration status_period = ros::Duration(1),
+  SnapshotterOptions(ros::Duration default_duration_limit = ros::Duration(30),
+                     int32_t default_memory_limit = -1,
+                     int32_t default_count_limit = -1,
+                     ros::Duration default_orphan_expiration_limit = ros::Duration(15),
+                     ros::Duration status_period = ros::Duration(1),
                      bool clear_buffer = true);
 
   // Add a new topic to the configuration, returns false if the topic was already present
   bool addTopic(std::string const& topic,
                 ros::Duration duration_limit = SnapshotterTopicOptions::INHERIT_DURATION_LIMIT,
                 int32_t memory_limit = SnapshotterTopicOptions::INHERIT_MEMORY_LIMIT,
-                int32_t count_limit = SnapshotterTopicOptions::INHERIT_COUNT_LIMIT);
+                int32_t count_limit = SnapshotterTopicOptions::INHERIT_COUNT_LIMIT,
+                ros::Duration orphan_expiration_limit = SnapshotterTopicOptions::INHERIT_ORPHAN_EXPIRATION_LIMIT);
   // Add a new topic pattern to the configuration, returns false if the pattern is invalid
   bool addPattern(std::string const& pattern,
                   ros::Duration duration_limit = SnapshotterTopicOptions::INHERIT_DURATION_LIMIT,
                   int32_t memory_limit = SnapshotterTopicOptions::INHERIT_MEMORY_LIMIT,
-                  int32_t count_limit = SnapshotterTopicOptions::INHERIT_COUNT_LIMIT);
+                  int32_t count_limit = SnapshotterTopicOptions::INHERIT_COUNT_LIMIT,
+                  ros::Duration orphan_expiration_limit = SnapshotterTopicOptions::INHERIT_ORPHAN_EXPIRATION_LIMIT);
 
   // Add a new topic or topic pattern to the configuration, returns false if the topic was already present
-  bool addTopicOrPattern(std::string const& topic_or_pattern,
-                         ros::Duration duration_limit = SnapshotterTopicOptions::INHERIT_DURATION_LIMIT,
-                         int32_t memory_limit = SnapshotterTopicOptions::INHERIT_MEMORY_LIMIT,
-                         int32_t count_limit = SnapshotterTopicOptions::INHERIT_COUNT_LIMIT);
+  bool addTopicOrPattern(
+    std::string const& topic_or_pattern,
+    ros::Duration duration_limit = SnapshotterTopicOptions::INHERIT_DURATION_LIMIT,
+    int32_t memory_limit = SnapshotterTopicOptions::INHERIT_MEMORY_LIMIT,
+    int32_t count_limit = SnapshotterTopicOptions::INHERIT_COUNT_LIMIT,
+    ros::Duration orphan_expiration_limit = SnapshotterTopicOptions::INHERIT_ORPHAN_EXPIRATION_LIMIT);
+
+  bool removeTopic(std::string const& topic);
 
   // Return the first matching topic pattern that matches the given topic, otherwise null.
   SnapshotterTopicPatternConstPtr findFirstMatchingPattern(const std::string &topic);
@@ -188,7 +206,7 @@ class ROSBAG_DECL MessageQueue
 
 private:
   // Locks access to size_ and queue_
-  boost::mutex lock;
+  mutable boost::mutex lock;
   // Stores limits on buffer size and duration
   SnapshotterTopicOptions options_;
   // Current total size of the queue, in bytes
@@ -197,6 +215,8 @@ private:
   queue_t queue_;
   // Subscriber to the callback which uses this queue
   boost::shared_ptr<ros::Subscriber> sub_;
+  // Time when topic became an orphan (no publishers attached to it).
+  std::optional<ros::Time> orphan_since_timestamp_;
 
 public:
   explicit MessageQueue(SnapshotterTopicOptions const& options);
@@ -215,13 +235,14 @@ public:
   typedef std::pair<queue_t::const_iterator, queue_t::const_iterator> range_t;
   // Get a begin and end iterator into the buffer respecting the start and end timestamp constraints
   range_t rangeFromTimes(ros::Time const& start, ros::Time const& end);
-
   // Return the total message size including the meta-information
   int64_t getMessageSize(SnapshotMessage const& msg) const;
-
   const SnapshotMessage* findExtraLatchedMessage(const ros::Time& start,
                                                  const ros::Time& stop) const;
-
+  void updateTopicExpirationStatus();
+  bool hasTopicExpired() const;
+  // Return the timestamp of the most recent message, or std::nullopt if queue is empty
+  std::optional<ros::Time> newestMessageTime() const;
 
 private:
   // Internal push whitch does not obtain lock
@@ -255,6 +276,7 @@ private:
   SnapshotterOptions options_;
   typedef std::map<std::string, boost::shared_ptr<MessageQueue> > buffers_t;
   buffers_t buffers_;
+  mutable boost::mutex buffers_lock_;
   // Locks recording_ and writing_ states.
   boost::upgrade_mutex state_lock_;
   // True if new messages are being written to the internal buffer
@@ -267,6 +289,7 @@ private:
   ros::Publisher status_pub_;
   ros::Timer status_timer_;
   ros::Timer poll_topic_timer_;
+  ros::Timer expired_topics_removal_timer_;
 
   // Replace individual topic limits with node defaults if they are flagged for it (see SnapshotterTopicOptions)
   void fixTopicOptions(SnapshotterTopicOptions& options);
@@ -294,6 +317,8 @@ private:
   void publishStatus(ros::TimerEvent const& e);
   // Poll master for new topics
   void pollTopics(ros::TimerEvent const& e, rosbag_snapshot::SnapshotterOptions *options);
+  // Remove expired orphaned topics from the buffers
+  void maybeRemoveExpiredTopics(ros::TimerEvent const& e);
   // Write the parts of message_queue within the time constraints of req to the queue
   // If returns false, there was an error opening/writing the bag and an error message was written to res.message
   bool writeTopic(rosbag::Bag& bag,
